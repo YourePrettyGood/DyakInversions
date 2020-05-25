@@ -1,0 +1,17 @@
+exhaustive_on	0
+admix_on	1
+dataFormat	1
+fixAlpha_on	0
+headerRow_on	0
+Kmin	1
+Kmax	3
+mainBurnin	1000
+mainSamples	2500
+missingData	-1
+ploidy	2
+ploidyCol_on	0
+popCol_on	0
+thermodynamic_on	1
+thermodynamicBurnin	1000
+thermodynamicRungs	21
+thermodynamicSamples	2500

@@ -1,0 +1,319 @@
+#Commands to run the MavericK analysis:
+#Important scripts to have available:
+#012toSTRUCTURE.awk
+#chromArmRegions.awk
+#genotypesTo012.awk
+#transpose012.awk
+#prepareMavericKQmatrices.R
+#Other dependencies:
+#bcftools (and tabix)
+#bedtools
+#awk, sed, standard GNU coreutils
+#GNU Parallel, of course
+#
+
+#Dyak:
+#Be sure to tabix index the per-individual filtered VCFs before merging:
+
+#Merge the per-individual filtered VCFs together (this is very slow):
+
+
+#Filter for biallelic SNPs with no missing genotypes (i.e. no individual had this site filtered):
+#(Takes a while, but far less time than merging)
+/usr/bin/time -v bcftools view -Oz -i 'FILTER=="PASS"' -v snps -m 2 -M 2 -g ^miss All_Dyak_filtered.vcf.gz 2> logs/bcftoolsViewBiallelicNoMissingFilter_All_Dyak.stderr > All_Dyak_filtered_biallelic_noMissing.vcf.gz
+tabix All_Dyak_filtered_biallelic_noMissing.vcf.gz
+
+#Make the MavericK subdirectory, and its own subdirectories:
+mkdir MavericK_windows
+pushd MavericK_windows/
+mkdir logs 012s BEDs Genotypes Evidence Likelihoods QMatrices
+#Be sure to copy in the awk and R scripts if you use the command lines below,
+# and also be sure to copy in the MavericK parameter files
+#MavericK's parameter file parsing is a bit wonky, so you may need empty lines at the start
+# to make it read in all the options
+
+#Grab the reference genome FASTA and make a .genome file for bedtools:
+ln -s ../Dyak_NY73PB.fasta .
+samtools faidx Dyak_NY73PB.fasta
+cut -f1,2 Dyak_NY73PB.fasta.fai > Dyak_NY73PB.genome
+
+#Make 100kb windows with bedtools, and drop anything that isn't a chromosome arm with an awk script:
+WINDOWSIZE=100000
+bedtools makewindows -g Dyak_NY73PB.genome -w ${WINDOWSIZE} 2> logs/bedtoolsMakewindows.stderr | ./chromArmRegions.awk > Dyak_NY73PB_arms_windows.bed
+
+#Just to quickly check the number of windows for later specification in a GNU parallel call:
+wc -l Dyak_NY73PB_arms_windows.bed
+#1302
+
+#Split the BED of windows into individual BEDs with one window each:
+i=1
+while read -r bedline;
+   do echo "${bedline}" > BEDs/All_Dyak_window${i}.bed;
+   ((i++));
+done < Dyak_NY73PB_arms_windows.bed
+
+#Extract the 012 matrices for each window (fast):
+#Note: The sed part is just to adjust some silly sample naming on my part, not a general requirement
+parallel -j40 --eta "bcftools view -Ou -R BEDs/All_Dyak_window{1}.bed ../All_Dyak_filtered_biallelic_noMissing.vcf.gz | bcftools query -H -f '%CHROM:%POS[\t%GT]\n' - | sed 's/Dyak_//g; s/_Dyak//g' | ./genotypesTo012.awk | ./transpose012.awk > 012s/All_Dyak_window{1}.012" ::: {1..1302}
+
+#Convert 012 matrices into MavericK/STRUCTURE-compatible input (very fast):
+parallel -j40 --eta './012toSTRUCTURE.awk 012s/All_Dyak_window{1}.012 > Genotypes/All_Dyak_window{1}_forSTRUCTURE.tsv' ::: {1..1302}
+
+#Do some tuning runs on a random subset of windows so that we have an idea of minimum burn-in and sampling length:
+#Note: This is fairly imperfect, as it relies on you sampling at least some windows with structure
+#(Very slow, MavericK runtime is linear in both the number of SNPs and the number of MCMC iterations)
+#(The coefficient is a bit absurd though -- about 2300 SNPs took ~5-6 hours for Tuning parameters)
+parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_tuning_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_yakuba/MavericK_windows/ -data Genotypes/All_Dyak_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dyak_window{1}_Tuning_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dyak_window{1}_Tuning_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dyak_window{1}_Tuning_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dyak_window{1}_Tuning_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dyak_window{1}_Tuning_Qmatrix_perInd.csv 2> logs/MavericK_All_Dyak_window{1}_Tuning.stderr > logs/MavericK_All_Dyak_window{1}_Tuning.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#I ran a test of the final parameters on this same subset of windows to make sure I got the same result as
+# the Tuning parameters got:
+parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_yakuba/MavericK_windows/ -data Genotypes/All_Dyak_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dyak_window{1}_Test_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dyak_window{1}_Test_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dyak_window{1}_Test_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dyak_window{1}_Test_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dyak_window{1}_Test_Qmatrix_perInd.csv 2> logs/MavericK_All_Dyak_window{1}_Test.stderr > logs/MavericK_All_Dyak_window{1}_Test.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#For the comparison of results, I first compared the NormalizedEvidence.csv files to check for stationarity of
+# the K estimate (the thermodynamic integration K estimate is stable, harmonic and Evanno are not)
+#Then I compared the inferred Q matrices at the optimal K -- they may be similar, or the demes may be permuted
+
+#Now for the full run of all windows:
+#(very slow, on the order of days (parallel says average 78.8s for 1302 jobs, so about 1.19 days))
+#57 diploids
+parallel -j38 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_yakuba/MavericK_windows/ -data Genotypes/All_Dyak_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dyak_window{1}_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dyak_window{1}_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dyak_window{1}_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dyak_window{1}_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dyak_window{1}_Qmatrix_perInd.csv 2> logs/MavericK_All_Dyak_window{1}.stderr > logs/MavericK_All_Dyak_window{1}.stdout' ::: {1..1302}
+
+#Combine the Q matrices for the optimal K for each window into a giant list in R, and save for later analysis:
+#Note: All_Dyak is the prefix of the MavericK output files, and 3 is the maximum K to include
+#We use this provided maximum K to avoid parsing directory contents
+/usr/bin/time -v ./prepareMavericKQmatrices.R All_Dyak 3 Dyak_NY73PB_arms_windows.bed 2> logs/prepareMavericKQmatrices_All_Dyak_full.stderr > logs/prepareMavericKQmatrices_All_Dyak_full.stdout
+
+#Dsan:
+#We had the VCFs backed up on another drive, so they were copied over to the "VCFs" subdirectory
+mkdir VCFs
+cp /run/media/pfreilly/PFR_Data2/Pseudorefs/20191124_backup/VCFs/Dsan_*_filtered.vcf.gz /run/media/pfreilly/PFR_Data2/Pseudorefs/20191124_backup/VCFs/G1-*_filtered.vcf.gz /run/media/pfreilly/PFR_Data2/Pseudorefs/20191124_backup/VCFs/sd*_Dsan_*_filtered.vcf.gz VCFs/
+
+#Be sure to tabix index the per-individual filtered VCFs before merging:
+parallel -j38 --eta 'tabix {1}' ::: VCFs/*.vcf.gz
+
+#Merge the per-individual filtered VCFs together (this is very slow):
+ls VCFs/*_filtered.vcf.gz > All_Dsan_filtered.fofn
+/usr/bin/time -v bcftools merge -m all -Oz --threads 16 -o All_Dsan_filtered.vcf.gz -l All_Dsan_filtered.fofn  2> logs/bcftoolsMerge_All_Dsan_filtered.stderr > logs/bcftoolsMerge_All_Dsan_filtered.stdout
+
+#Filter for biallelic SNPs with no missing genotypes (i.e. no individual had this site filtered):
+#(Takes a while, but far less time than merging)
+/usr/bin/time -v bcftools view -Oz -i 'FILTER=="PASS"' -v snps -m 2 -M 2 -g ^miss All_Dsan_filtered.vcf.gz 2> logs/bcftoolsViewBiallelicNoMissingFilter_All_Dsan.stderr > All_Dsan_filtered_biallelic_noMissing.vcf.gz
+tabix All_Dsan_filtered_biallelic_noMissing.vcf.gz
+
+#Make the MavericK subdirectory, and its own subdirectories:
+mkdir MavericK_windows
+pushd MavericK_windows/
+mkdir logs 012s BEDs Genotypes Evidence Likelihoods QMatrices
+#Be sure to copy in the awk and R scripts if you use the command lines below,
+# and also be sure to copy in the MavericK parameter files
+#MavericK's parameter file parsing is a bit wonky, so you may need empty lines at the start
+# to make it read in all the options
+cp ../../D_yakuba/MavericK_windows/*.awk .
+cp ../../D_yakuba/MavericK_windows/*.R .
+cp ../../D_yakuba/MavericK_windows/*.txt .
+
+#Grab the reference genome FASTA and make a .genome file for bedtools:
+ln -s ../Dsan_STOCAGO1482.fasta .
+samtools faidx Dsan_STOCAGO1482.fasta 
+cut -f1,2 Dsan_STOCAGO1482.fasta.fai > Dsan_STOCAGO1482.genome
+
+#Make 100kb windows with bedtools, and drop anything that isn't a chromosome arm with an awk script:
+bedtools makewindows -g Dsan_STOCAGO1482.genome -w 100000 2> logs/bedtoolsMakewindows.stderr | ./chromArmRegions.awk > Dsan_STOCAGO1482_arms_windows.bed
+
+#Just to quickly check the number of windows for later specification in a GNU parallel call:
+wc -l Dsan_STOCAGO1482_arms_windows.bed 
+#1297 Dsan_STOCAGO1482_arms_windows.bed
+
+#Split the BED of windows into individual BEDs with one window each:
+i=1
+while read -r bedline;
+   do echo "${bedline}" > BEDs/All_Dsan_window${i}.bed;
+   ((i++));
+done < Dsan_STOCAGO1482_arms_windows.bed
+
+#Extract the 012 matrices for each window (fast, < 1 minute):
+#Note: The sed part is just to adjust some silly sample naming on my part, not a general requirement
+parallel -j40 --eta "bcftools view -Ou -R BEDs/All_Dsan_window{1}.bed ../All_Dsan_filtered_biallelic_noMissing.vcf.gz | bcftools query -H -f '%CHROM:%POS[\t%GT]\n' - | sed 's/Dsan_//g; s/_Dsan//g' | ./genotypesTo012.awk | ./transpose012.awk > 012s/All_Dsan_window{1}.012" ::: {1..1297}
+
+#Convert 012 matrices into MavericK/STRUCTURE-compatible input (very fast, ~10 seconds):
+parallel -j40 --eta './012toSTRUCTURE.awk 012s/All_Dsan_window{1}.012 > Genotypes/All_Dsan_window{1}_forSTRUCTURE.tsv' ::: {1..1297}
+
+#Do some tuning runs on a random subset of windows so that we have an idea of minimum burn-in and sampling length:
+#Note: This is fairly imperfect, as it relies on you sampling at least some windows with structure
+#(Very slow, MavericK runtime is linear in both the number of SNPs and the number of MCMC iterations)
+#(GNU Parallel says average 1715.1s across the 10 runs, although some finished far faster than others)
+parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_tuning_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_santomea/MavericK_windows/ -data Genotypes/All_Dsan_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dsan_window{1}_Tuning_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dsan_window{1}_Tuning_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dsan_window{1}_Tuning_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dsan_window{1}_Tuning_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dsan_window{1}_Tuning_Qmatrix_perInd.csv 2> logs/MavericK_All_Dsan_window{1}_Tuning.stderr > logs/MavericK_All_Dsan_window{1}_Tuning.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#I ran a test of the final parameters on this same subset of windows to make sure I got the same result as
+# the Tuning parameters got:
+#Skipped this test initially for Dsan
+#parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_santomea/MavericK_windows/ -data Genotypes/All_Dsan_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dsan_window{1}_Test_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dsan_window{1}_Test_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dsan_window{1}_Test_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dsan_window{1}_Test_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dsan_window{1}_Test_Qmatrix_perInd.csv 2> logs/MavericK_All_Dsan_window{1}_Test.stderr > logs/MavericK_All_Dsan_window{1}_Test.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#For the comparison of results, I first compared the NormalizedEvidence.csv files to check for stationarity of
+# the K estimate (the thermodynamic integration K estimate is stable, harmonic and Evanno are not)
+#Then I compared the inferred Q matrices at the optimal K -- they may be similar, or the demes may be permuted
+
+#Now for the full run of all windows:
+#(very slow, on the order of days (parallel says average 73.7s for 1297 jobs, so about 1.11 days))
+#50 diploids
+parallel -j38 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_santomea/MavericK_windows/ -data Genotypes/All_Dsan_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dsan_window{1}_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dsan_window{1}_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dsan_window{1}_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dsan_window{1}_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dsan_window{1}_Qmatrix_perInd.csv 2> logs/MavericK_All_Dsan_window{1}.stderr > logs/MavericK_All_Dsan_window{1}.stdout' ::: {1..1297}
+
+#Combine the Q matrices for the optimal K for each window into a giant list in R, and save for later analysis:
+#Note: All_Dsan is the prefix of the MavericK output files, and 3 is the maximum K to include
+#We use this provided maximum K to avoid parsing directory contents
+/usr/bin/time -v ./prepareMavericKQmatrices.R All_Dsan 3 Dsan_STOCAGO1482_arms_windows.bed 2> logs/prepareMavericKQmatrices_All_Dsan_full.stderr > logs/prepareMavericKQmatrices_All_Dsan_full.stdout
+
+#Dtei:
+#We had the VCFs backed up on another drive, so they were copied over to the "VCFs" subdirectory
+mkdir VCFs
+cp /run/media/pfreilly/PFR_Data2/Pseudorefs/20191124_backup/VCFs/Dtei_GT53w_realigned_MPILEUP_filtered.vcf.gz /run/media/pfreilly/PFR_Data2/Pseudorefs/20191124_backup/VCFs/sd*_Dtei_realigned_MPILEUP_filtered.vcf.gz VCFs/
+
+#Be sure to tabix index the per-individual filtered VCFs before merging:
+parallel -j9 --eta 'tabix {1}' ::: VCFs/*.vcf.gz
+ 
+#Merge the per-individual filtered VCFs together (this is very slow):
+ls VCFs/*_filtered.vcf.gz > All_Dtei_filtered.fofn
+/usr/bin/time -v bcftools merge -m all -Oz --threads 9 -o All_Dtei_filtered.vcf.gz -l All_Dtei_filtered.fofn 2> logs/bcftoolsMerge_All_Dtei_filtered.stderr > logs/bcftoolsMerge_All_Dtei_filtered.stdout
+tabix All_Dtei_filtered.vcf.gz
+
+#Filter for biallelic SNPs with no missing genotypes (i.e. no individual had this site filtered):
+#(Takes a while, but far less time than merging)
+/usr/bin/time -v bcftools view -Oz -i 'FILTER=="PASS"' -v snps -m 2 -M 2 -g ^miss All_Dtei_filtered.vcf.gz 2> logs/bcftoolsViewBiallelicNoMissingFilter_All_Dtei.stderr > All_Dtei_filtered_biallelic_noMissing.vcf.gz
+tabix All_Dtei_filtered_biallelic_noMissing.vcf.gz 
+
+#Make the MavericK subdirectory, and its own subdirectories:
+mkdir MavericK_windows
+pushd MavericK_windows/
+mkdir logs 012s BEDs Genotypes Evidence Likelihoods QMatrices
+#Be sure to copy in the awk and R scripts if you use the command lines below,
+# and also be sure to copy in the MavericK parameter files
+#MavericK's parameter file parsing is a bit wonky, so you may need empty lines at the start
+# to make it read in all the options
+cp ../../D_yakuba/MavericK_windows/*.awk .
+cp ../../D_yakuba/MavericK_windows/*.R .
+cp ../../D_yakuba/MavericK_windows/*.txt .
+
+#Grab the reference genome FASTA and make a .genome file for bedtools:
+ln -s ../Dtei_GT53w.fasta .
+samtools faidx Dtei_GT53w.fasta 
+cut -f1,2 Dtei_GT53w.fasta.fai > Dtei_GT53w.genome
+
+#Make 100kb windows with bedtools, and drop anything that isn't a chromosome arm with an awk script:
+bedtools makewindows -g Dtei_GT53w.genome -w 100000 2> logs/bedtoolsMakewindows.stderr | ./chromArmRegions.awk > Dtei_GT53w_arms_windows.bed
+
+#Just to quickly check the number of windows for later specification in a GNU parallel call:
+wc -l Dtei_GT53w_arms_windows.bed 
+#1343 Dtei_GT53w_arms_windows.bed
+
+#Split the BED of windows into individual BEDs with one window each:
+i=1
+while read -r bedline;
+   do echo "${bedline}" > BEDs/All_Dtei_window${i}.bed;
+   ((i++));
+done < Dtei_GT53w_arms_windows.bed
+
+#Extract the 012 matrices for each window (fast, < 1 minute):
+#Note: The sed part is just to adjust some silly sample naming on my part, not a general requirement
+parallel -j40 --eta "bcftools view -Ou -R BEDs/All_Dtei_window{1}.bed ../All_Dtei_filtered_biallelic_noMissing.vcf.gz | bcftools query -H -f '%CHROM:%POS[\t%GT]\n' - | sed 's/Dtei_//g; s/_Dtei//g' | ./genotypesTo012.awk | ./transpose012.awk > 012s/All_Dtei_window{1}.012" ::: {1..1343}
+
+#Convert 012 matrices into MavericK/STRUCTURE-compatible input (very fast, ~10 seconds):
+parallel -j40 --eta './012toSTRUCTURE.awk 012s/All_Dtei_window{1}.012 > Genotypes/All_Dtei_window{1}_forSTRUCTURE.tsv' ::: {1..1343}
+
+#Do some tuning runs on a random subset of windows so that we have an idea of minimum burn-in and sampling length:
+#Note: This is fairly imperfect, as it relies on you sampling at least some windows with structure
+#(Very slow, MavericK runtime is linear in both the number of SNPs and the number of MCMC iterations)
+#(GNU Parallel says average 598.4s across the 10 runs, although some finished far faster than others)
+parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_tuning_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_teissieri/MavericK_windows/ -data Genotypes/All_Dtei_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dtei_window{1}_Tuning_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dtei_window{1}_Tuning_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dtei_window{1}_Tuning_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dtei_window{1}_Tuning_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dtei_window{1}_Tuning_Qmatrix_perInd.csv 2> logs/MavericK_All_Dtei_window{1}_Tuning.stderr > logs/MavericK_All_Dtei_window{1}_Tuning.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#I ran a test of the final parameters on this same subset of windows to make sure I got the same result as
+# the Tuning parameters got:
+#Skipped this test initially for Dtei
+#parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_teissieri/MavericK_windows/ -data Genotypes/All_Dtei_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dtei_window{1}_Test_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dtei_window{1}_Test_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dtei_window{1}_Test_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dtei_window{1}_Test_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dtei_window{1}_Test_Qmatrix_perInd.csv 2> logs/MavericK_All_Dtei_window{1}_Test.stderr > logs/MavericK_All_Dtei_window{1}_Test.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#For the comparison of results, I first compared the NormalizedEvidence.csv files to check for stationarity of
+# the K estimate (the thermodynamic integration K estimate is stable, harmonic and Evanno are not)
+#Then I compared the inferred Q matrices at the optimal K -- they may be similar, or the demes may be permuted
+
+#Now for the full run of all windows:
+#(very slow, on the order of days (parallel says average 22.3s for 1343 jobs, so about 0.35 days))
+#9 diploids
+parallel -j38 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_teissieri/MavericK_windows/ -data Genotypes/All_Dtei_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/All_Dtei_window{1}_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/All_Dtei_window{1}_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/All_Dtei_window{1}_Likelihood.csv -outputLog_on 1 -outputLog logs/All_Dtei_window{1}_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/All_Dtei_window{1}_Qmatrix_perInd.csv 2> logs/MavericK_All_Dtei_window{1}.stderr > logs/MavericK_All_Dtei_window{1}.stdout' ::: {1..1343}
+
+#Combine the Q matrices for the optimal K for each window into a giant list in R, and save for later analysis:
+#Note: All_Dtei is the prefix of the MavericK output files, and 3 is the maximum K to include
+#We use this provided maximum K to avoid parsing directory contents
+/usr/bin/time -v ./prepareMavericKQmatrices.R All_Dtei 3 Dtei_GT53w_arms_windows.bed 2> logs/prepareMavericKQmatrices_All_Dtei_full.stderr > logs/prepareMavericKQmatrices_All_Dtei_full.stdout
+
+#Dmel:
+#Run on a different drive entirely
+pushd VCFs/
+/usr/bin/time -v bcftools merge -m all -Oz --threads 4 -o Dmel_DPGP3_ZI_filtered.vcf.gz -l Dmel_DPGP3_ZI_filtered.fofn 2> logs/bcftoolsMerge_Dmel_DPGP3_ZI_filtered.stderr > logs/bcftoolsMerge_Dmel_DPGP3_ZI_filtered.stdout
+popd
+
+#Make the MavericK subdirectory, and its own subdirectories:
+mkdir MavericK_windows
+pushd MavericK_windows/
+mkdir logs 012s BEDs Genotypes Evidence Likelihoods QMatrices
+#Be sure to copy in the awk and R scripts if you use the command lines below,
+# and also be sure to copy in the MavericK parameter files
+#MavericK's parameter file parsing is a bit wonky, so you may need empty lines at the start
+# to make it read in all the options
+cp /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_yakuba/MavericK_windows/*.awk .
+cp /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_yakuba/MavericK_windows/*.R .
+cp /run/media/pfreilly/PFR_Scratch/Pseudorefs/D_yakuba/MavericK_windows/*.txt .
+
+#Filter for biallelic SNPs with no missing genotypes (i.e. no individual had this site filtered):
+#(Takes a while, but far less time than merging)
+/usr/bin/time -v bcftools view -Oz -i 'FILTER=="PASS"' -v snps -m 2 -M 2 -g ^miss ../VCFs/Dmel_DPGP3_ZI_filtered.vcf.gz 2> logs/bcftoolsViewBiallelicNoMissingFilter_Dmel_DPGP3_ZI.stderr > Dmel_DPGP3_ZI_filtered_biallelic_noMissing.vcf.gz
+tabix Dmel_DPGP3_ZI_filtered_biallelic_noMissing.vcf.gz
+
+#Grab the reference genome FASTA and make a .genome file for bedtools:
+cp /run/media/pfreilly/PFR8TB1/Dmel_DPGP3/dmel-all-chromosome-r6.27_w60.fasta Dmel_ISO1.fasta
+samtools faidx Dmel_ISO1.fasta 
+cut -f1,2 Dmel_ISO1.fasta.fai > Dmel_ISO1.genome
+
+#Make 100kb windows with bedtools, and drop anything that isn't a chromosome arm with an awk script:
+bedtools makewindows -g Dmel_ISO1.genome -w 100000 2> logs/bedtoolsMakewindows.stderr | ./chromArmRegions.awk > Dmel_ISO1_arms_windows.bed
+
+#Just to quickly check the number of windows for later specification in a GNU parallel call:
+wc -l Dmel_ISO1_arms_windows.bed 
+#1379 Dmel_ISO1_arms_windows.bed
+
+#Split the BED of windows into individual BEDs with one window each:
+i=1
+while read -r bedline;
+   do echo "${bedline}" > BEDs/Dmel_DPGP3_ZI_window${i}.bed;
+   ((i++));
+done < Dmel_ISO1_arms_windows.bed
+
+#Extract the 012 matrices for each window (fast, < 1 minute):
+parallel -j40 --eta "bcftools view -Ou -R BEDs/Dmel_DPGP3_ZI_window{1}.bed Dmel_DPGP3_ZI_filtered_biallelic_noMissing.vcf.gz | bcftools query -H -f '%CHROM:%POS[\t%GT]\n' - | ./genotypesTo012.awk | ./transpose012.awk > 012s/Dmel_DPGP3_ZI_window{1}.012" ::: {1..1379}
+
+#Convert 012 matrices into MavericK/STRUCTURE-compatible input (very fast, ~10 seconds):
+parallel -j40 --eta './012toSTRUCTURE.awk 012s/Dmel_DPGP3_ZI_window{1}.012 > Genotypes/Dmel_DPGP3_ZI_window{1}_forSTRUCTURE.tsv' ::: {1..1379}
+
+#Do some tuning runs on a random subset of windows so that we have an idea of minimum burn-in and sampling length:
+#Note: This is fairly imperfect, as it relies on you sampling at least some windows with structure
+#(Very slow, MavericK runtime is linear in both the number of SNPs and the number of MCMC iterations)
+#(GNU Parallel says average 4925.7s across the 10 runs, although some finished far faster than others)
+parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_tuning_params.txt -masterRoot /run/media/pfreilly/PFR_Data2/StructuralVariation/ALStructure/D_melanogaster/MavericK_windows/ -data Genotypes/Dmel_DPGP3_ZI_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/Dmel_DPGP3_ZI_window{1}_Tuning_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/Dmel_DPGP3_ZI_window{1}_Tuning_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/Dmel_DPGP3_ZI_window{1}_Tuning_Likelihood.csv -outputLog_on 1 -outputLog logs/Dmel_DPGP3_ZI_window{1}_Tuning_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/Dmel_DPGP3_ZI_window{1}_Tuning_Qmatrix_perInd.csv 2> logs/MavericK_Dmel_DPGP3_ZI_window{1}_Tuning.stderr > logs/MavericK_Dmel_DPGP3_ZI_window{1}_Tuning.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#I ran a test of the final parameters on this same subset of windows to make sure I got the same result as
+# the Tuning parameters got:
+#Skipped this test initially for Dmel
+#parallel -j40 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Data2/StructuralVariation/ALStructure/D_melanogaster/MavericK_windows/ -data Genotypes/Dmel_DPGP3_ZI_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/Dmel_DPGP3_ZI_window{1}_Test_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/Dmel_DPGP3_ZI_window{1}_Test_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/Dmel_DPGP3_ZI_window{1}_Test_Likelihood.csv -outputLog_on 1 -outputLog logs/Dmel_DPGP3_ZI_window{1}_Test_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/Dmel_DPGP3_ZI_window{1}_Test_Qmatrix_perInd.csv 2> logs/MavericK_Dmel_DPGP3_ZI_window{1}_Test.stderr > logs/MavericK_Dmel_DPGP3_ZI_window{1}_Test.stdout' ::: 1 95 172 350 429 630 737 844 1000 1196
+
+#For the comparison of results, I first compared the NormalizedEvidence.csv files to check for stationarity of
+# the K estimate (the thermodynamic integration K estimate is stable, harmonic and Evanno are not)
+#Then I compared the inferred Q matrices at the optimal K -- they may be similar, or the demes may be permuted
+
+#Now for the full run of all windows:
+#(very slow, on the order of days (parallel says average s for 1379 jobs, so about  days))
+#197 "diploids", although they're all haploid
+parallel -j38 --eta '/usr/bin/time -v MavericK -parameters MavericK_params.txt -masterRoot /run/media/pfreilly/PFR_Data2/StructuralVariation/ALStructure/D_melanogaster/MavericK_windows/ -data Genotypes/Dmel_DPGP3_ZI_window{1}_forSTRUCTURE.tsv -EMalgorithm_on 1 -EMiterations 100 -EMrepeats 10 -outputEvidence_on 1 -outputEvidence Evidence/Dmel_DPGP3_ZI_window{1}_Evidence.csv -outputEvidenceNormalised_on 1 -outputEvidenceNormalised Evidence/Dmel_DPGP3_ZI_window{1}_NormalizedEvidence.csv -outputLikelihood_on 1 -outputLikelihood Likelihoods/Dmel_DPGP3_ZI_window{1}_Likelihood.csv -outputLog_on 1 -outputLog logs/Dmel_DPGP3_ZI_window{1}_Log.txt -outputQmatrix_ind_on 1 -outputQmatrix_ind QMatrices/Dmel_DPGP3_ZI_window{1}_Qmatrix_perInd.csv 2> logs/MavericK_Dmel_DPGP3_ZI_window{1}.stderr > logs/MavericK_Dmel_DPGP3_ZI_window{1}.stdout' ::: {1..1379}
+
+#Combine the Q matrices for the optimal K for each window into a giant list in R, and save for later analysis:
+#Note: Dmel_DPGP3_ZI is the prefix of the MavericK output files, and 3 is the maximum K to include
+#We use this provided maximum K to avoid parsing directory contents
+/usr/bin/time -v ./prepareMavericKQmatrices.R Dmel_DPGP3_ZI 3 Dmel_ISO1_arms_windows.bed 2> logs/prepareMavericKQmatrices_Dmel_DPGP3_ZI_full.stderr > logs/prepareMavericKQmatrices_Dmel_DPGP3_ZI_full.stdout
+

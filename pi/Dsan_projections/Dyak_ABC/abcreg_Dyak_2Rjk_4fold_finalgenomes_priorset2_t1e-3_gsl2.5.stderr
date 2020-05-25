@@ -1,0 +1,23 @@
+	Command being timed: "/home/pfreilly/Downloads/Bioinformatics/Statistics/abcreg/src/reg -p Dyak_2L_MaCS_v2_priors.gz -d Dyak_2Rjk_4fold_observed_summaries_HassonEanesIntervals.gz -P 4 -S 3 -b Dyak_2Rjk_4fold_finalgenomes_priorset2_t1e-3 -t 0.001 -T"
+	User time (seconds): 8.44
+	System time (seconds): 0.07
+	Percent of CPU this job got: 100%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:08.51
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 75036
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 35694
+	Voluntary context switches: 1
+	Involuntary context switches: 12
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 64
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
