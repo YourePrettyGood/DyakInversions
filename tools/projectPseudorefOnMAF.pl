@@ -10,12 +10,16 @@ Getopt::Long::Configure qw(gnu_getopt);
 #                                                              #
 ################################################################
 
+#Version 1.1 (2020/09/23) Added a flag to drop FASTA header parts after
+#                         the first whitespace-delimited token. Also
+#                         cleaned up the usage/help.
+
 #First pass script to project pseudoreference-based genotypes
 # from one reference onto another via pairwise MAF of 1:1
 # alignments between references produced by LAST
 
 my $SCRIPTNAME = "projectPseudorefOnMAF.pl";
-my $VERSION = "1.0";
+my $VERSION = "1.1";
 
 =pod
 
@@ -25,7 +29,7 @@ projectPseudorefOnMAF.pl - Project pseudoref SNPs on pairwise 1:1 MAF
 
 =head1 SYNOPSIS
 
-projectPseudorefOnMAF.pl [options] <Species 1 prefix> <Species 2 prefix>
+projectPseudorefOnMAF.pl [options] <Query species prefix> <Target species prefix>
 
  Options:
   --help,-h,-?          Print this help documentation
@@ -33,23 +37,23 @@ projectPseudorefOnMAF.pl [options] <Species 1 prefix> <Species 2 prefix>
   --query_FASTA,-q      Path to FASTA of reference used as query by LAST
   --pseudoref,-p        Path to pseudoreference FASTA in query space
   --prefix,-o           Prefix for output files (required)
+  --truncate_names,-t   Only keep the first whitespace-delimited token
+                        when extracting scaffold headers
   --debug,-d            Output debugging information to STDERR
   --version,-v          Output version string
 
 =head1 DESCRIPTION
 
 This script works similarly to groundTruthFromMAF.pl, except it
-projects the genotypes encoded in a pseudoref in 
-This script generates INSNP files of the ground truth variant calls
-in each species' coordinate space based on a MAF file of 1:1 pairwise
-alignments produced by LAST. The scaffold IDs in the MAF file should
-follow the format [species prefix].[scaffold name], where the species
-prefix and scaffold name both are alphanumeric (plus underscores). As
-long as the scaffold IDs follow this convention, and you provide the
-species prefixes precisely as found in the MAF, the script will work
-as intended.
-The script will also generate BED files to indicate the extents of each
-aligned segment in each appropriate coordinate space.
+projects the genotypes encoded in a pseudoref in the query's
+coordinate space into the target's coordinate space. The projection
+is output in INSNP format (cf. Heng Li's seqtk mutfa), as well as
+a BED indicating which regions of the target were aligned in the MAF.
+Original testing of this script was based on MAF files of 1:1 pairwise
+alignments produced by LAST, with scaffold IDs having a particular
+format: [species prefix].[scaffold name]. The scaffold name may be
+truncated relative to the FASTA by taking the first whitespace-
+delimited token (as is typical of other programs like read mappers).
 
 For example:
 
@@ -107,9 +111,10 @@ my $maf_path = "STDIN";
 my $query_path = "";
 my $pseudoref_path = "";
 my $pseudoref_prefix = "";
+my $truncate_names = 0;
 my $debug = 0;
 my $dispversion = 0;
-GetOptions('input_maf|i=s' => \$maf_path, 'query_path|q=s' => \$query_path, 'pseudoref|p=s' => \$pseudoref_path, 'prefix|o=s' => \$pseudoref_prefix, 'debug|d+' => \$debug, 'version|v' => \$dispversion, 'help|h|?+' => \$help, man => \$man) or pod2usage(2);
+GetOptions('input_maf|i=s' => \$maf_path, 'query_path|q=s' => \$query_path, 'pseudoref|p=s' => \$pseudoref_path, 'prefix|o=s' => \$pseudoref_prefix, 'truncate_names|t' => \$truncate_names, 'debug|d+' => \$debug, 'version|v' => \$dispversion, 'help|h|?+' => \$help, man => \$man) or pod2usage(2);
 pod2usage(-exitval => 1, -verbose => $help, -output => \*STDERR) if $help;
 pod2usage(-exitval => 0, -verbose => 2, -output => \*STDERR) if $man;
 
@@ -167,8 +172,14 @@ while (my $line = <$query_fh>) {
          $query_seqs{$header} = $seq_holder;
          $seq_holder = "";
       }
-      #We expect perfect matches of headers between sequences, including metadata
-      $header = substr($line, 1);
+      unless ($truncate_names) {
+         #We expect perfect matches of headers between sequences, including metadata
+         $header = substr($line, 1);
+      } else {
+         #Only match the first whitespace-delimited token:
+         my @header_tokens = split /\s+/, $line;
+         $header = substr($header_tokens[0], 1);
+      }
    } else {
       $seq_holder .= $line;
    }
@@ -198,8 +209,14 @@ while (my $line = <$pseudoref_fh>) {
          $pseudoref_seqs{$header} = $seq_holder;
          $seq_holder = "";
       }
-      #We expect perfect matches of headers between sequences, including metadata
-      $header = substr($line, 1);
+      unless ($truncate_names) {
+         #We expect perfect matches of headers between sequences, including metadata
+         $header = substr($line, 1);
+      } else {
+         #Only match the first whitespace-delimited token:
+         my @header_tokens = split /\s+/, $line;
+         $header = substr($header_tokens[0], 1);
+      }
    } else {
       $seq_holder .= $line;
    }
