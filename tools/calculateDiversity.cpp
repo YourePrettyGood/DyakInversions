@@ -6,6 +6,7 @@
  *                                shared_poly                               *
  * Version 1.2 written 2020/01/09 Bugfixes, including usable fraction no    *
  *                                longer output if site not usable          *
+ * Version 1.3 written 2024/05/19 Bugfix for invalid pop files              *
  *                                                                          *
  * Description:                                                             *
  * This script takes in pseudoreference FASTAs and a TSV describing which   *
@@ -40,7 +41,7 @@
 #define optional_argument 2
 
 //Version:
-#define VERSION "1.2"
+#define VERSION "1.3"
 
 //Define number of bases, shouldn't ever change:
 #define NUM_BASES 4
@@ -676,17 +677,22 @@ int main(int argc, char **argv) {
    while (getline(pop_file, popline)) {
       vector<string> line_vector;
       line_vector = splitString(popline, '\t');
+      if ((parse_inbred && line_vector.size() < 3) || (!parse_inbred && line_vector.size() < 2)) {
+         cerr << "Invalid population TSV file, either not enough columns or the delimiter is not a tab." << endl;
+         pop_file.close();
+         return 11;
+      }
       try {
-         population_map[fasta_index] = stoul(line_vector[1]);
+         population_map[fasta_index] = stoul(line_vector.at(1));
       } catch (const invalid_argument& e) {
          cerr << "Invalid population ID in second column of population TSV." << endl;
          cerr << "Must be a positive integer." << endl;
          pop_file.close();
-         return 9;
+         return 12;
       }
       if (parse_inbred) {
          try {
-            inbred[fasta_index] = stoul(line_vector[2]);
+            inbred[fasta_index] = stoul(line_vector.at(2));
          } catch (const invalid_argument& e) {
             cerr << "Invalid inbred boolean in third column of population TSV." << endl;
             cerr << "Must be a non-negative integer." << endl;
@@ -697,8 +703,8 @@ int main(int argc, char **argv) {
          inbred[fasta_index] = 2;
       }
       fasta_index++;
-      input_FASTA_paths.push_back(line_vector[0]);
-      populations.insert(stoul(line_vector[1]));
+      input_FASTA_paths.push_back(line_vector.at(0));
+      populations.insert(stoul(line_vector.at(1)));
    }
    pop_file.close();
    unsigned long num_pops = populations.size();

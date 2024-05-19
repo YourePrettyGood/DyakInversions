@@ -1,6 +1,6 @@
 CXXFLAGS += -g -Wall -O3 --std=c++11
 
-OBJS = calculateDiversity calculateDxy calculatePolymorphism listPolyDivSites nonOverlappingWindows
+OBJS = calculateDiversity calculateDiversity_nm calculateDxy calculatePolymorphism listPolyDivSites nonOverlappingWindows
 
 all: $(OBJS)
 

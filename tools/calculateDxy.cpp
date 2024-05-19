@@ -5,6 +5,7 @@
  * Version 2.1 written 2017/05/30 (added shared polymorphism and inbred)    *
  * Version 2.2 written 2017/11/13 (no need for list of pseudorefs)          *
  * Version 2.3 written 2018/11/08 (Omit position may output weight instead) *
+ * Version 2.4 written 2024/05/19 (Bugfix for invalid pop file)             *
  *                                                                          *
  * Description:                                                             *
  * This script takes in pseudoreference FASTAs and a TSV describing which   *
@@ -38,7 +39,7 @@
 #define optional_argument 2
 
 //Version:
-#define VERSION "2.3"
+#define VERSION "2.4"
 
 //Define number of bases:
 #define NUM_BASES 4
@@ -484,16 +485,21 @@ int main(int argc, char **argv) {
    while (getline(pop_file, popline)) {
       vector<string> line_vector;
       line_vector = splitString(popline, '\t');
+      if (line_vector.size() < 2) {
+         cerr << "Invalid population TSV file, either not enough columns or the delimiter is not a tab." << endl;
+         pop_file.close();
+         return 10;
+      }
       try {
-         population_map[fasta_index++] = stoul(line_vector[1]);
+         population_map[fasta_index++] = stoul(line_vector.at(1));
       } catch (const invalid_argument& e) {
          cerr << "Invalid population ID in second column of population TSV." << endl;
          cerr << "Must be a positive integer." << endl;
          pop_file.close();
-         return 9;
+         return 11;
       }
-      input_FASTA_paths.push_back(line_vector[0]);
-      populations.insert(stoul(line_vector[1]));
+      input_FASTA_paths.push_back(line_vector.at(0));
+      populations.insert(stoul(line_vector.at(1)));
    }
    pop_file.close();
    unsigned long num_populations = populations.size();
